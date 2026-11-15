@@ -1,56 +1,66 @@
-name: Compile
+name: Compile Android APK
 
 on:
   push:
-    branches: [ "legacy" ]
+    branches: [ "legacy", "main" ]
+  workflow_dispatch:
 
 jobs:
-  windows:
-    name: Windows (MSYS2)
-
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
-
-    steps:
-    - uses: actions/checkout@v3
-    - uses: msys2/setup-msys2@v2
-    - name: Fetch Dependencies
-      run: pacman -S --noconfirm unzip make git mingw-w64-x86_64-gcc mingw-w64-x86_64-glew mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL python3 mingw-w64-x86_64-curl mingw-w64-x86_64-jsoncpp
-    - name: Build
-      run: |
-        make
-        cd build/us_pc
-        rm -rf textures text src sound lib levels include data bin assets actors res
-        rm -f level_rules.mk
-        cd ../../
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: saturn-${{ github.run_number }}-${{ github.job }}
-        path: D:\a\Saturn\Saturn\build\us_pc\
-
-  linux:
-    name: Linux
-
+  android:
+    name: Android APK (OpenGL ES + Touch Controls)
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Fetch Dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y build-essential git python3 libglew-dev libsdl2-dev curl libcurl4-gnutls-dev libjsoncpp-dev
-    - name: Build
-      run: |
-        make
-        cd build/us_pc
-        rm -rf textures text src sound lib levels include data bin assets actors res
-        rm -f level_rules.mk
-        cd ../../
-    - name: Upload Binaries
-      uses: actions/upload-artifact@v4
-      with:
-        name: saturn-${{ github.run_number }}-${{ github.job }}
-        path: /home/runner/work/Saturn/Saturn/build/us_pc
+      - name: Checkout Saturn Repo
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git python3 unzip wget curl libjsoncpp-dev
+
+      - name: Setup Java 17 (Required for Android Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK and CMake
+        run: |
+          sdkmanager "ndk;25.2.9519653" "cmake;3.22.1" "platforms;android-33" "build-tools;33.0.2"
+
+      - name: Fetch sm64coopdx Android Wrapper & Touch Controls
+        run: |
+          git clone --depth=1 https://github.com temp_android
+          cp -rn temp_android/app ./
+          cp -rn temp_android/gradle ./
+          cp -n temp_android/gradlew ./
+          cp -n temp_android/build.gradle ./
+          cp -n temp_android/settings.gradle ./
+          chmod +x gradlew
+          rm -rf temp_android
+
+      - name: Patch OpenGL to OpenGL ES & Enable Touch UI
+        run: |
+          # Replace desktop GLEW/OpenGL flags with Android OpenGL ES 2/3 & SDL2
+          sed -i 's/-lGLEW//g' Makefile || true
+          sed -i 's/-lGL/-lGLESv2 -lEGL/g' Makefile || true
+          # Copy Saturn C/C++ sources into the Android JNI C++ folder
+          mkdir -p app/jni/src
+          cp -r src include levels actors textures text sound data bin assets app/jni/src/ || true
+
+      - name: Build Android APK (C++ NDK + Kotlin Wrapper)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+        run: |
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload Saturn Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: saturn-android-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/*.apk
+concurrency:
